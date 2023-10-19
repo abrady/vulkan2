@@ -32,8 +32,13 @@
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
 
-const std::string MODEL_PATH = "models/viking_room.obj";
-const std::string TEXTURE_PATH = "textures/viking_room.png";
+struct ModelInfo {
+    std::string MODEL_PATH;
+    std::string TEXTURE_PATH;
+};
+const std::vector<ModelInfo> modelInfos = {
+    {"models/viking_room.obj", "textures/viking_room.png"},
+};
 
 const int MAX_FRAMES_IN_FLIGHT = 2;
 
@@ -202,7 +207,8 @@ private:
             vkDestroyBuffer(device, vertexBuffer, nullptr);
             vkFreeMemory(device, vertexBufferMemory, nullptr);
         }
-    } models[1];
+    };
+    std::vector<Model> models;
 
     std::vector<VkBuffer> uniformBuffers;
     std::vector<VkDeviceMemory> uniformBuffersMemory;
@@ -249,11 +255,13 @@ private:
         createCommandPool();
         createDepthResources();
         createFramebuffers();
-        for (auto &m: models) {
-            createTextureImage(m);
+        for (auto &mi: modelInfos) {
+            models.push_back({});
+            auto &m = models.back();
+            createTextureImage(mi, m);
             createTextureImageView(m);
             createTextureSampler(m);
-            loadModel(m);
+            loadModel(mi, m);
             createVertexBuffer(m);
             createIndexBuffer(m);
         }
@@ -818,13 +826,13 @@ private:
         return format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT;
     }
 
-    void createTextureImage(Model &model) {
+    void createTextureImage(ModelInfo mi, Model &model) {
         int texWidth, texHeight, texChannels;
-        stbi_uc* pixels = stbi_load(TEXTURE_PATH.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+        stbi_uc* pixels = stbi_load(mi.TEXTURE_PATH.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
         VkDeviceSize imageSize = texWidth * texHeight * 4;
 
         if (!pixels) {
-            throw std::runtime_error("failed to load texture image " + TEXTURE_PATH);
+            throw std::runtime_error("failed to load texture image " + mi.TEXTURE_PATH);
         }
 
         VkBuffer stagingBuffer;
@@ -1002,13 +1010,13 @@ private:
         endSingleTimeCommands(commandBuffer);
     }
 
-    void loadModel(Model &model) {
+    void loadModel(ModelInfo const &mi, Model &model) {
         tinyobj::attrib_t attrib;
         std::vector<tinyobj::shape_t> shapes;
         std::vector<tinyobj::material_t> materials;
         std::string warn, err;
 
-        if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, MODEL_PATH.c_str())) {
+        if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, mi.MODEL_PATH.c_str())) {
             throw std::runtime_error(warn + err);
         }
 
