@@ -16,20 +16,21 @@
 #define TINYOBJLOADER_IMPLEMENTATION
 #include <tiny_obj_loader.h>
 
-#include <iostream>
-#include <fstream>
-#include <stdexcept>
 #include <algorithm>
-#include <chrono>
-#include <vector>
-#include <cstring>
-#include <cstdlib>
-#include <cstdint>
-#include <limits>
 #include <array>
+#include <chrono>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <iostream>
+#include <limits>
 #include <optional>
 #include <set>
+#include <stdexcept>
+#include <thread>
 #include <unordered_map>
+#include <vector>
 
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
@@ -40,7 +41,7 @@ struct ModelInfo {
 };
 const std::vector<ModelInfo> modelInfos = {
     {"models/viking_room.obj", "textures/viking_room.png"},
-    //{"models/cube.obj", "textures/viking_room.png"},
+    {"models/cube.obj", "textures/viking_room.png"},
 };
 
 const int MAX_FRAMES_IN_FLIGHT = 2;
@@ -174,16 +175,16 @@ private:
     std::vector<VkFramebuffer> swapChainFramebuffers;
 
     VkRenderPass renderPass;
-    VkPipelineLayout pipelineLayout;
-    VkPipeline graphicsPipeline;
 
-    VkCommandPool commandPool;
 
     VkImage depthImage;
     VkDeviceMemory depthImageMemory;
     VkImageView depthImageView;
 
     struct Model {
+        VkPipelineLayout pipelineLayout;
+        VkPipeline graphicsPipeline;
+        VkCommandPool commandPool;
         VkDescriptorSetLayout descriptorSetLayout;
 
         VkImage textureImage;
@@ -208,6 +209,9 @@ private:
 
 
         void cleanup(VkDevice device) {
+            vkDestroyPipeline(device, graphicsPipeline, nullptr);
+            vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+
             vkDestroySampler(device, textureSampler, nullptr);
             vkDestroyImageView(device, textureImageView, nullptr);
 
@@ -229,6 +233,8 @@ private:
             }
 
             vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+            vkDestroyCommandPool(device, commandPool, nullptr);
+
 
         }
     };
@@ -268,10 +274,10 @@ private:
         createRenderPass();
         createDepthResources();
         createFramebuffers();
-        createCommandPool();
         for (auto &mi: modelInfos) {
             models.push_back({});
             auto &m = models.back();
+            createCommandPool(m);
             createDescriptorSetLayout(m);
             createGraphicsPipeline(m);
             createTextureImage(mi, m);
@@ -289,9 +295,21 @@ private:
     }
 
     void mainLoop() {
+        using namespace std::chrono;
+        milliseconds targetFrameTime(1000 / 30);
+
+
         while (!glfwWindowShouldClose(window)) {
+            high_resolution_clock::time_point frameStartTime = high_resolution_clock::now();
+
             glfwPollEvents();
             drawFrame();
+
+            high_resolution_clock::time_point frameEndTime = high_resolution_clock::now();
+            milliseconds elapsedTime = duration_cast<milliseconds>(frameEndTime - frameStartTime);
+            if (elapsedTime < targetFrameTime) {
+                std::this_thread::sleep_for(targetFrameTime - elapsedTime);
+            }
         }
 
         vkDeviceWaitIdle(device);
@@ -316,13 +334,10 @@ private:
     void cleanup() {
         cleanupSwapChain();
 
-        vkDestroyPipeline(device, graphicsPipeline, nullptr);
-
         for (auto m: models) {
             m.cleanup(device);
 
         }
-        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         vkDestroyRenderPass(device, renderPass, nullptr);
 
         for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
@@ -330,8 +345,6 @@ private:
             vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
             vkDestroyFence(device, inFlightFences[i], nullptr);
         }
-
-        vkDestroyCommandPool(device, commandPool, nullptr);
 
         vkDestroyDevice(device, nullptr);
 
@@ -734,7 +747,7 @@ private:
         pipelineLayoutInfo.setLayoutCount = 1;
         pipelineLayoutInfo.pSetLayouts = &m.descriptorSetLayout;
 
-        if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
+        if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &m.pipelineLayout) != VK_SUCCESS) {
             throw std::runtime_error("failed to create pipeline layout!");
         }
 
@@ -750,12 +763,12 @@ private:
         pipelineInfo.pDepthStencilState = &depthStencil;
         pipelineInfo.pColorBlendState = &colorBlending;
         pipelineInfo.pDynamicState = &dynamicState;
-        pipelineInfo.layout = pipelineLayout;
+        pipelineInfo.layout = m.pipelineLayout;
         pipelineInfo.renderPass = renderPass;
         pipelineInfo.subpass = 0;
         pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
 
-        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &graphicsPipeline) != VK_SUCCESS) {
+        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m.graphicsPipeline) != VK_SUCCESS) {
             throw std::runtime_error("failed to create graphics pipeline!");
         }
 
@@ -787,7 +800,7 @@ private:
         }
     }
 
-    void createCommandPool() {
+    void createCommandPool(Model &m) {
         QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
 
         VkCommandPoolCreateInfo poolInfo{};
@@ -795,7 +808,7 @@ private:
         poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
         poolInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value();
 
-        if (vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS) {
+        if (vkCreateCommandPool(device, &poolInfo, nullptr, &m.commandPool) != VK_SUCCESS) {
             throw std::runtime_error("failed to create graphics command pool!");
         }
     }
@@ -856,9 +869,9 @@ private:
 
         createImage(texWidth, texHeight, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, model.textureImage, model.textureImageMemory);
 
-        transitionImageLayout(model.textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-            copyBufferToImage(stagingBuffer, model.textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
-        transitionImageLayout(model.textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        transitionImageLayout(model, model.textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            copyBufferToImage(model, stagingBuffer, model.textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
+        transitionImageLayout(model, model.textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
         vkDestroyBuffer(device, stagingBuffer, nullptr);
         vkFreeMemory(device, stagingBufferMemory, nullptr);
@@ -948,8 +961,8 @@ private:
         vkBindImageMemory(device, image, imageMemory, 0);
     }
 
-    void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout) {
-        VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+    void transitionImageLayout(Model &m, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout) {
+        VkCommandBuffer commandBuffer = beginSingleTimeCommands(m);
 
         VkImageMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -992,11 +1005,11 @@ private:
             1, &barrier
         );
 
-        endSingleTimeCommands(commandBuffer);
+        endSingleTimeCommands(m, commandBuffer);
     }
 
-    void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height) {
-        VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+    void copyBufferToImage(Model &m, VkBuffer buffer, VkImage image, uint32_t width, uint32_t height) {
+        VkCommandBuffer commandBuffer = beginSingleTimeCommands(m);
 
         VkBufferImageCopy region{};
         region.bufferOffset = 0;
@@ -1015,7 +1028,7 @@ private:
 
         vkCmdCopyBufferToImage(commandBuffer, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-        endSingleTimeCommands(commandBuffer);
+        endSingleTimeCommands(m, commandBuffer);
     }
 
     void loadModel(ModelInfo const &mi, Model &model) {
@@ -1073,7 +1086,7 @@ private:
 
         createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, model.vertexBuffer, model.vertexBufferMemory);
 
-        copyBuffer(stagingBuffer, model.vertexBuffer, bufferSize);
+        copyBuffer(model, stagingBuffer, model.vertexBuffer, bufferSize);
 
         vkDestroyBuffer(device, stagingBuffer, nullptr);
         vkFreeMemory(device, stagingBufferMemory, nullptr);
@@ -1093,7 +1106,7 @@ private:
 
         createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, model.indexBuffer, model.indexBufferMemory);
 
-        copyBuffer(stagingBuffer, model.indexBuffer, bufferSize);
+        copyBuffer(model, stagingBuffer, model.indexBuffer, bufferSize);
 
         vkDestroyBuffer(device, stagingBuffer, nullptr);
         vkFreeMemory(device, stagingBufferMemory, nullptr);
@@ -1145,36 +1158,37 @@ private:
         }
 
         for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-            VkDescriptorBufferInfo bufferInfo{};
-            bufferInfo.buffer = m.uniformBuffers[i];
-            bufferInfo.offset = 0;
-            bufferInfo.range = sizeof(UniformBufferObject);
+            for (auto m: models) {
+                VkDescriptorBufferInfo bufferInfo{};
+                bufferInfo.buffer = m.uniformBuffers[i];
+                bufferInfo.offset = 0;
+                bufferInfo.range = sizeof(UniformBufferObject);
 
-            Model &m = models[0];
-            VkDescriptorImageInfo imageInfo{};
-            imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            imageInfo.imageView = m.textureImageView;
-            imageInfo.sampler = m.textureSampler;
+                VkDescriptorImageInfo imageInfo{};
+                imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                imageInfo.imageView = m.textureImageView;
+                imageInfo.sampler = m.textureSampler;
 
-            std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
+                std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
 
-            descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            descriptorWrites[0].dstSet = m.descriptorSets[i];
-            descriptorWrites[0].dstBinding = 0;
-            descriptorWrites[0].dstArrayElement = 0;
-            descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            descriptorWrites[0].descriptorCount = 1;
-            descriptorWrites[0].pBufferInfo = &bufferInfo;
+                descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                descriptorWrites[0].dstSet = m.descriptorSets[i];
+                descriptorWrites[0].dstBinding = 0;
+                descriptorWrites[0].dstArrayElement = 0;
+                descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                descriptorWrites[0].descriptorCount = 1;
+                descriptorWrites[0].pBufferInfo = &bufferInfo;
 
-            descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            descriptorWrites[1].dstSet = m.descriptorSets[i];
-            descriptorWrites[1].dstBinding = 1;
-            descriptorWrites[1].dstArrayElement = 0;
-            descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            descriptorWrites[1].descriptorCount = 1;
-            descriptorWrites[1].pImageInfo = &imageInfo;
+                descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                descriptorWrites[1].dstSet = m.descriptorSets[i];
+                descriptorWrites[1].dstBinding = 1;
+                descriptorWrites[1].dstArrayElement = 0;
+                descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                descriptorWrites[1].descriptorCount = 1;
+                descriptorWrites[1].pImageInfo = &imageInfo;
 
-            vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+                vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+            }
         }
     }
 
@@ -1204,11 +1218,11 @@ private:
         vkBindBufferMemory(device, buffer, bufferMemory, 0);
     }
 
-    VkCommandBuffer beginSingleTimeCommands() {
+    VkCommandBuffer beginSingleTimeCommands(Model &m) {
         VkCommandBufferAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
         allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocInfo.commandPool = commandPool;
+        allocInfo.commandPool = m.commandPool;
         allocInfo.commandBufferCount = 1;
 
         VkCommandBuffer commandBuffer;
@@ -1223,7 +1237,7 @@ private:
         return commandBuffer;
     }
 
-    void endSingleTimeCommands(VkCommandBuffer commandBuffer) {
+    void endSingleTimeCommands(Model &m, VkCommandBuffer commandBuffer) {
         vkEndCommandBuffer(commandBuffer);
 
         VkSubmitInfo submitInfo{};
@@ -1234,17 +1248,17 @@ private:
         vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
         vkQueueWaitIdle(graphicsQueue);
 
-        vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+        vkFreeCommandBuffers(device, m.commandPool, 1, &commandBuffer);
     }
 
-    void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
-        VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+    void copyBuffer(Model &m, VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
+        VkCommandBuffer commandBuffer = beginSingleTimeCommands(m);
 
         VkBufferCopy copyRegion{};
         copyRegion.size = size;
         vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
 
-        endSingleTimeCommands(commandBuffer);
+        endSingleTimeCommands(m, commandBuffer);
     }
 
     uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
@@ -1265,7 +1279,7 @@ private:
 
         VkCommandBufferAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocInfo.commandPool = commandPool;
+        allocInfo.commandPool = m.commandPool;
         allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         allocInfo.commandBufferCount = (uint32_t) m.commandBuffers.size();
 
@@ -1274,7 +1288,7 @@ private:
         }
     }
 
-    void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+    void recordCommandBuffer(Model &m, VkCommandBuffer commandBuffer, uint32_t imageIndex) {
         VkCommandBufferBeginInfo beginInfo{};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
@@ -1298,7 +1312,7 @@ private:
 
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m.graphicsPipeline);
 
             VkViewport viewport{};
             viewport.x = 0.0f;
@@ -1310,18 +1324,17 @@ private:
             vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
 
             VkRect2D scissor{};
-            scissor.offset = {0, 0};
             scissor.extent = swapChainExtent;
+            scissor.offset = {0, 0};
             vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-            Model &m = models[0];
             VkBuffer vertexBuffers[] = {m.vertexBuffer};
             VkDeviceSize offsets[] = {0};
             vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
 
             vkCmdBindIndexBuffer(commandBuffer, m.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
-            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &m.descriptorSets[currentFrame], 0, nullptr);
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m.pipelineLayout, 0, 1, &m.descriptorSets[currentFrame], 0, nullptr);
 
             vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(m.indices.size()), 1, 0, 0, 0);
 
@@ -1369,7 +1382,9 @@ private:
     }
 
     void drawFrame() {
+        std::cerr << "before fences\n";
         vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+        std::cerr << "after vkWaitForFences\n";
 
         uint32_t imageIndex;
         VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
@@ -1381,40 +1396,48 @@ private:
             throw std::runtime_error("failed to acquire swap chain image!");
         }
 
-        // TODO: make this multi model
-        Model &m = models[0];
-        updateUniformBuffer(m, currentFrame);
-
+        std::cerr << "before reset fences\n";
         vkResetFences(device, 1, &inFlightFences[currentFrame]);
+        std::cerr << "after reset fences\n";
+        for (int i = 0; i < models.size(); ++i) {
+            Model &m = models[i];
+            updateUniformBuffer(m, currentFrame);
 
-        vkResetCommandBuffer(m.commandBuffers[currentFrame], /*VkCommandBufferResetFlagBits*/ 0);
-        recordCommandBuffer(m.commandBuffers[currentFrame], imageIndex);
+            vkResetCommandBuffer(m.commandBuffers[currentFrame], /*VkCommandBufferResetFlagBits*/ 0);
+            recordCommandBuffer(m, m.commandBuffers[currentFrame], imageIndex);
 
-        VkSubmitInfo submitInfo{};
-        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            VkSubmitInfo submitInfo{};
+            submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-        VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[currentFrame]};
-        VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-        submitInfo.waitSemaphoreCount = 1;
-        submitInfo.pWaitSemaphores = waitSemaphores;
-        submitInfo.pWaitDstStageMask = waitStages;
+            //VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[currentFrame]};
+            //VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+            //submitInfo.waitSemaphoreCount = 1;
+            //submitInfo.pWaitSemaphores = waitSemaphores;
+            //submitInfo.pWaitDstStageMask = waitStages;
+            submitInfo.waitSemaphoreCount = 0;
+            
+            submitInfo.commandBufferCount = 1;
+            submitInfo.pCommandBuffers = &m.commandBuffers[currentFrame];
 
-        submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &m.commandBuffers[currentFrame];
+            // VkSemaphore signalSemaphores[] = {renderFinishedSemaphores[currentFrame]};
+            // submitInfo.signalSemaphoreCount = 1;
+            // submitInfo.pSignalSemaphores = signalSemaphores;
+            submitInfo.signalSemaphoreCount = 0;
 
-        VkSemaphore signalSemaphores[] = {renderFinishedSemaphores[currentFrame]};
-        submitInfo.signalSemaphoreCount = 1;
-        submitInfo.pSignalSemaphores = signalSemaphores;
-
-        if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]) != VK_SUCCESS) {
-            throw std::runtime_error("failed to submit draw command buffer!");
+            std::cerr << "before vkQueueSubmit\n";
+            if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]) != VK_SUCCESS) {
+                throw std::runtime_error("failed to submit draw command buffer!");
+            }
+            std::cerr << "after vkQueueSubmit\n";
         }
 
         VkPresentInfoKHR presentInfo{};
         presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 
-        presentInfo.waitSemaphoreCount = 1;
-        presentInfo.pWaitSemaphores = signalSemaphores;
+        // VkSemaphore signalSemaphores[] = {renderFinishedSemaphores[currentFrame]};
+        // presentInfo.waitSemaphoreCount = 1;
+        // presentInfo.pWaitSemaphores = signalSemaphores;
+        presentInfo.waitSemaphoreCount = 0;
 
         VkSwapchainKHR swapChains[] = {swapChain};
         presentInfo.swapchainCount = 1;
