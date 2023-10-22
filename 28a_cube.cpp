@@ -1,5 +1,3 @@
-// TODO load and render a second model
-// TODO now we need to render these two things in different locations
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
@@ -43,7 +41,7 @@ struct ModelInfo {
 };
 const std::vector<ModelInfo> modelInfos = {
     {"models/viking_room.obj", "textures/viking_room.png"},
-    //{"models/cube.obj", "textures/viking_room.png"},
+    {"models/cube.obj", "textures/viking_room.png"},
 };
 
 const int MAX_FRAMES_IN_FLIGHT = 2;
@@ -903,7 +901,6 @@ private:
         samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
         samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
 
-        // TODO: may not be necessary to allocate one per texxture
         if (vkCreateSampler(device, &samplerInfo, nullptr, &model.textureSampler) != VK_SUCCESS) {
             throw std::runtime_error("failed to create texture sampler!");
         }
@@ -1407,11 +1404,12 @@ private:
 
     void drawFrame() {
         // make sure we're not still rendering the previous frame
-        //cerr << "before fences\n";
         std::vector<VkFence> fences = getModelFences();
+        cerr << "before fences " << fences.size() << " 0: " << fences[0] << ", 1: " << fences[1] << "\n";
         vkWaitForFences(device, fences.size(), fences.data(), VK_TRUE, UINT64_MAX);
         //cerr << "after vkWaitForFences\n";
 
+        cerr << "vkAcquireNextImageKHR semaphore: " << imageAvailableSemaphores[currentFrame] << "\n";
         uint32_t imageIndex;
         VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
 
@@ -1425,7 +1423,26 @@ private:
         //cerr << "before reset fences\n";
         vkResetFences(device, fences.size(), fences.data());
         //cerr << "after reset fences\n";
+
+        cerr << "adding frame wait semaphore " << imageAvailableSemaphores[currentFrame] << "\n";
+        {
+            VkSubmitInfo submitInfo{};
+            submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+            VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[currentFrame]};
+            VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+
+            submitInfo.waitSemaphoreCount = 1;
+            submitInfo.pWaitSemaphores = waitSemaphores;
+            submitInfo.pWaitDstStageMask = waitStages;        
+
+            if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
+                throw std::runtime_error("failed to submit draw command buffer!");
+            }
+        }
+        cerr << "before models\n";
         for (int i = 0; i < models.size(); ++i) {
+            cerr << "model " << i << "\n";
             Model &m = models[i];
             updateUniformBuffer(m, currentFrame);
 
@@ -1434,12 +1451,6 @@ private:
 
             VkSubmitInfo submitInfo{};
             submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-
-            VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[currentFrame]};
-            VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-            submitInfo.waitSemaphoreCount = 1;
-            submitInfo.pWaitSemaphores = waitSemaphores;
-            submitInfo.pWaitDstStageMask = waitStages;
             
             submitInfo.commandBufferCount = 1;
             submitInfo.pCommandBuffers = &m.commandBuffers[currentFrame];
@@ -1448,12 +1459,13 @@ private:
             submitInfo.signalSemaphoreCount = 1;
             submitInfo.pSignalSemaphores = signalSemaphores;
 
-            //cerr << "before vkQueueSubmit\n";
+            cerr << "before vkQueueSubmit\n";
             if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, m.inFlightFences[currentFrame]) != VK_SUCCESS) {
                 throw std::runtime_error("failed to submit draw command buffer!");
             }
-            //cerr << "after vkQueueSubmit\n";
+            cerr << "after vkQueueSubmit\n";
         }
+        cerr << "after models\n";
 
         VkPresentInfoKHR presentInfo{};
         presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
