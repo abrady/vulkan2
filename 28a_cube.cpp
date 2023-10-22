@@ -209,7 +209,7 @@ private:
 
         std::array<VkFence, MAX_FRAMES_IN_FLIGHT> inFlightFences;
         std::array<VkSemaphore, MAX_FRAMES_IN_FLIGHT> renderFinishedSemaphores;
-
+        std::array<VkSemaphore, MAX_FRAMES_IN_FLIGHT> frameReadySemaphores;
 
         void cleanup(VkDevice device) {
             vkDestroyPipeline(device, graphicsPipeline, nullptr);
@@ -241,6 +241,7 @@ private:
             for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
                 vkDestroyFence(device, inFlightFences[i], nullptr);
                 vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
+                vkDestroySemaphore(device, frameReadySemaphores[i], nullptr);
             }
         }
     };
@@ -1355,7 +1356,8 @@ private:
 
         for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
             if (vkCreateFence(device, &fenceInfo, nullptr, &m.inFlightFences[i]) != VK_SUCCESS ||
-            vkCreateSemaphore(device, &semaphoreInfo, nullptr, &m.renderFinishedSemaphores[i]) != VK_SUCCESS) {
+            vkCreateSemaphore(device, &semaphoreInfo, nullptr, &m.renderFinishedSemaphores[i]) != VK_SUCCESS ||
+            vkCreateSemaphore(device, &semaphoreInfo, nullptr, &m.frameReadySemaphores[i]) != VK_SUCCESS) {
                 throw std::runtime_error("failed to create synchronization objects for a frame!");
             }
         }
@@ -1394,10 +1396,18 @@ private:
         return fences;
     }
 
-    std::vector<VkSemaphore> getModelSemaphores() {
+    std::vector<VkSemaphore> getModelRenderFinishedSemaphores() {
         std::vector<VkSemaphore> sms;
         for(auto m: models) {
             sms.push_back(m.renderFinishedSemaphores[currentFrame]);
+        }
+        return sms;
+    }
+
+    std::vector<VkSemaphore> getModelFrameReadySemaphores() {
+        std::vector<VkSemaphore> sms;
+        for(auto m: models) {
+            sms.push_back(m.frameReadySemaphores[currentFrame]);
         }
         return sms;
     }
@@ -1434,7 +1444,11 @@ private:
 
             submitInfo.waitSemaphoreCount = 1;
             submitInfo.pWaitSemaphores = waitSemaphores;
-            submitInfo.pWaitDstStageMask = waitStages;        
+            submitInfo.pWaitDstStageMask = waitStages;  
+
+            auto frameReadySemaphores = getModelFrameReadySemaphores();
+            submitInfo.signalSemaphoreCount = frameReadySemaphores.size();
+            submitInfo.pSignalSemaphores = frameReadySemaphores.data();
 
             if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
                 throw std::runtime_error("failed to submit draw command buffer!");
@@ -1455,6 +1469,12 @@ private:
             submitInfo.commandBufferCount = 1;
             submitInfo.pCommandBuffers = &m.commandBuffers[currentFrame];
 
+            VkSemaphore waitSemaphores[] = {m.frameReadySemaphores[currentFrame]};
+            VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+            submitInfo.waitSemaphoreCount = 1;
+            submitInfo.pWaitSemaphores = waitSemaphores;
+            submitInfo.pWaitDstStageMask = waitStages;  
+
             VkSemaphore signalSemaphores[] = {m.renderFinishedSemaphores[currentFrame]};
             submitInfo.signalSemaphoreCount = 1;
             submitInfo.pSignalSemaphores = signalSemaphores;
@@ -1470,7 +1490,7 @@ private:
         VkPresentInfoKHR presentInfo{};
         presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 
-        auto renderSemaphores = getModelSemaphores();
+        auto renderSemaphores = getModelRenderFinishedSemaphores();
         presentInfo.pWaitSemaphores = renderSemaphores.data();
         presentInfo.waitSemaphoreCount = renderSemaphores.size();
 
